@@ -1,0 +1,470 @@
+```{r}
+options(
+        stringsAsFactors = FALSE, 
+        scipen=10)
+# if(!require(checkpoint)) install.packages("checkpoint");library(checkpoint)
+#'checkpoint('2016-12-13')
+snapshotDate = '2017-06-18'
+# checkpoint(snapshotDate)
+# setSnapshot(snapshotDate)
+options(repos = c(CRAN = paste0('https://mran.microsoft.com/snapshot/', snapshotDate)))
+assign('.lib.loc', 
+       c(path.expand(paste0('~/.checkpoint/', snapshotDate, '/lib/', version$platform, '/', version$major, '.', version$minor)), path.expand(paste0('~/.checkpoint/R-', version$major, '.', version$minor)), .Library.site), 
+       envir = environment(.libPaths))
+
+# devtools::install_github('MatthieuStigler/RDDtools/RDDtools')
+# install.packages(c('rdrobust','rdlocrand', 'rddensity'))
+#'library(rdd)
+#'library(rdrobust)
+#'library(rdlocrand)
+#'library(rddensity)
+
+library(tidyverse)
+library(RDDtools)
+library(data.table)
+library(dtplyr)
+library(magrittr)
+library(gridExtra)
+library(broom)
+library(stringr)
+library(janitor)
+# library(rlist)
+library(readxl)
+library(haven)
+library(sjlabelled)
+library(rio)
+# library(texreg)
+library(doMC)
+library(foreach)
+library(pbapply)
+library(stargazer)
+
+sumtab = function(df) summary(df) %>% data.frame %>% select(variables = Var2, Freq) %>% separate(Freq, c('stats', 'val'), ':')  %>% spread(key = stats, val) %>%  .[,c(1,5,7,4,2,6,3,8)]
+```
+
+
+```{r}
+susenas_hh_prep <- function(filepath, label = NULL) 
+{
+ssn_hh = import(filepath)
+if(!is.null(label)) ssn_hh %<>% sjmisc::set_label(ssn_hh_lab)
+ssn_hh %<>% janitor::clean_names
+
+ssn_hh %<>% mutate(  pkhever = ifelse(b7r2a == 1, 1, 0)
+                   , bsmever = ifelse(  b7r6a == 1 
+                                      | b7r6b == 1 
+                                      | b7r6c == 1 
+                                      | b7r6d == 1
+                                      , 1, 0)
+                   , pbiever = ifelse(b7r8a == 1, 1, 0)
+                   )
+ssh_hh
+}
+
+ssn_hh_lab = read_excel('~/Seafile/Susenas/Susenas2013/Layout Susenas gab 2013.xls', skip = 4)  
+ssn_hh_lab %>% data.table
+ssn_hh_lab %<>% .[c(ssn_hh_lab$Label, 'Expenditure/capita', 'Food Exp/capita', 'Non Food Exp /capita')-nrow(.),]
+
+ssn_hh %>% group_by(b1r1) %>% summarise(pkhever = sum(pkhever)) %>% summarise(sum(pkhever != 0)) #33
+
+ssn_hh %>% group_by(b1r1, b1r2) %>% summarise(pkhever = sum(pkhever)) %>% ungroup %>% summarise(sum(pkhever != 0)) #292
+
+
+susenas_id_prep <- function(filepath, label = NULL) 
+{
+ssn_id = import(filepath)
+if(!is.null(label)) ssn_id %<>% sjmisc::set_label(ssn_id_lab)
+ssn_id %<>% janitor::clean_names
+
+ssn_id %<>% mutate(pkhever = ifelse(b7r2a == 1, 1, 0)
+                   , ever_prim = ifelse(b5r15 >= 4)
+                   , ever_middle = ifelse(b5r15 >= 4)
+                   )
+ssh_id
+}
+```
+
+# SUSENAS 2013
+
+
+```{r}
+s13h = import('~/Seafile/Susenas2013/kor13rt.dbf')
+k13h = read_excel('~/Seafile/Susenas2013/Layout Susenas gab 2013.xls', skip = 4)  %>% .[-nrow(.),]
+s13h %<>% set_label(c(k13h$Label, 'Expenditure/capita', 'Food Exp/capita', 'Non Food Exp /capita'))
+names(s13h) %<>% tolower
+
+s13h %<>% mutate(pkhever = ifelse(b7r2a == 1, 1, 0))
+s13h %<>% mutate(bsmever = ifelse(b7r6a == 1 | b7r6b ==1 | b7r6c ==1 | b7r6d ==1, 1, 0))
+s13h %<>% mutate(pbiever = ifelse(b7r8a == 2, 0, 1))
+
+s13h %>% group_by(b1r1) %>% summarise(pkhever = sum(pkhever)) %>% summarise(sum(pkhever != 0)) #33
+
+s13h %>% group_by(b1r1, b1r2) %>% summarise(pkhever = sum(pkhever)) %>% ungroup %>% summarise(sum(pkhever != 0)) #292
+
+s13h %<>%  mutate(percentile = cut(exp_cap, quantile(exp_cap, seq(0,1,.01)), labels=FALSE)) 
+
+s13h = pmt_vars_prep(s13h,s13i) 
+s13h =
+s13i %>% 
+    group_by(urut) %>% 
+    summarise(  elig_child018 = 1*(sum(hb == 3 & umur <= 18) > 0)
+              )  %>%  
+ inner_join(s13h, .)
+
+s13i = import('~/Seafile/Susenas2013/kor13ind.dbf')
+names(s13i) %<>% tolower
+k13i = c(k14i$Label, 'Exp', 'Food', 'Non Food')
+s13i %<>% set_label(k13i)
+
+s13i = 
+s13h %>% 
+    dplyr::select(urut, percentile, pkhever, bsmever, pbiever) %>%  
+    inner_join(s13i) 
+
+s13i %<>% mutate(jk = ifelse(jk ==2, 0, jk))
+
+s13i %<>% 
+ mutate(  sick_1m = ifelse(b5r1a ==1 | b5r1b ==1 | b5r1c ==1 | b5r1d ==1 | b5r1e ==1 | b5r1f ==1 | b5r1g ==1 | b5r1h ==1 , 1, 0)
+        , sick_fever = ifelse(b5r1a ==2, 0, 1)
+        , sick_cough = ifelse(b5r1b ==2, 0, 1)
+        , sick_cold = ifelse(b5r1c ==2, 0, 1)
+        , sick_asthma = ifelse(b5r1d ==2, 0, 1)
+        , sick_diarrhea = ifelse(b5r1e ==2, 0, 1)
+        , sick_headache = ifelse(b5r1f ==2, 0, 1)
+        , sick_toothache = ifelse(b5r1g ==2, 0, 1)
+        , sick_other = ifelse(b5r1a ==2, 0, 1)
+        , sick_selfmed = ifelse(b5r4a ==2, 0, 1)
+        , out_1m = ifelse(b5r5 ==2, 0, 1) 
+        , out_hosp = ifelse(b5r6a > 0 | b5r6b > 0, 1, 0)
+        , out_hosp_pub = ifelse(b5r6a > 0, 1, 0)
+        , out_pub = ifelse(b5r6a > 0 | b5r6d > 0, 1, 0)
+        , out_priv = ifelse(b5r6b > 0 | b5r6c > 0, 1, 0)
+        , out_6m = ifelse(b5r7 ==2, 0, b5r7)
+        , in_1y = ifelse(b5r8 ==2, 0, b5r8)
+        , in_hosp = ifelse(b5r9a > 0 | b5r9b > 0, 1, 0)
+        , in_hosp_pub = ifelse(b5r9a > 0, 1, 0)
+        , in_hosp_priv = ifelse(b5r9b > 0 , 1, 0)
+        , in_pub = ifelse(b5r9a > 0 | b5r9c > 0, 1, 0)
+        , in_pub_healthc = ifelse(b5r9c > 0, 1, 0)
+        )
+```
+
+
+
+# SUSENAS 2014
+
+```{r}
+
+s14h = import('~/Seafile/Susenas2014/2014Gab_kor14rt.dbf')
+k14h = read_excel('~/Seafile/Susenas2014/Layout Kor Modul 2014 GABUNGAN.xls', skip = 1, sheet = 3)  
+s14h %<>% set_label(k14h$Label)
+names(s14h) %<>% tolower
+s14h %<>% mutate(pkhever = ifelse(b7r2a == 1, 1, 0),
+                 bsmever = ifelse(b7r6a == 1 | b7r6b ==1 | b7r6c ==1 | b7r6d ==1, 1, 0),
+                 pbiever = ifelse(b7r8a == 2, 0, 1))
+                 
+
+s14h %>% group_by(b1r1) %>% summarise(pkhever = sum(pkhever)) %>% summarise(sum(pkhever != 0)) #33
+s14h %>% group_by(b1r1, b1r2) %>% summarise(pkhever = sum(pkhever)) %>% ungroup %>% summarise(sum(pkhever != 0)) #380
+
+s14i = import('~/Seafile/Susenas2014/kor14ind_rev2_230915.dbf')
+k14i = read_excel('~/Seafile/Susenas2014/Layout Kor Modul 2014 GABUNGAN.xls', skip = 1, sheet = 1)  
+s14i %<>% set_label(k14i$Label)
+names(s14i) %<>% tolower
+s14i = 
+s14h %>% 
+    select(urut, pkhever, bsmever, pbiever) %>%  
+    inner_join(s14i, by='urut') 
+
+s14i %<>% mutate(jk = ifelse(jk ==2, 0, jk))
+
+s14i %<>% 
+ mutate(  sick_1m = ifelse(b5r1a ==1 | b5r1b ==1 | b5r1c ==1 | b5r1d ==1 | b5r1e ==1 | b5r1f ==1 | b5r1g ==1 | b5r1h ==1 , 1, 0)
+        , sick_fever = ifelse(b5r1a ==2, 0, 1)
+        , sick_cough = ifelse(b5r1b ==2, 0, 1)
+        , sick_cold = ifelse(b5r1c ==2, 0, 1)
+        , sick_asthma = ifelse(b5r1d ==2, 0, 1)
+        , sick_diarrhea = ifelse(b5r1e ==2, 0, 1)
+        , sick_headache = ifelse(b5r1f ==2, 0, 1)
+        , sick_toothache = ifelse(b5r1g ==2, 0, 1)
+        , sick_other = ifelse(b5r1a ==2, 0, 1)
+        , sick_selfmed = ifelse(b5r4a ==2, 0, 1)
+        , out_1m = ifelse(b5r5 ==2, 0, 1) 
+        , out_hosp = ifelse(b5r6a > 0 | b5r6b > 0, 1, 0)
+        , out_hosp_pub = ifelse(b5r6a > 0, 1, 0)
+        , out_pub = ifelse(b5r6a > 0 | b5r6d > 0, 1, 0)
+        , out_priv = ifelse(b5r6b > 0 | b5r6c > 0, 1, 0)
+        , out_6m = ifelse(b5r7 ==2, 0, b5r7)
+        , in_1y = ifelse(b5r8 ==2, 0, b5r8)
+        , in_hosp = ifelse(b5r9a > 0 | b5r9b > 0, 1, 0)
+        , in_hosp_pub = ifelse(b5r9a > 0, 1, 0)
+        , in_hosp_priv = ifelse(b5r9b > 0 , 1, 0)
+        , in_pub = ifelse(b5r9a > 0 | b5r9c > 0, 1, 0)
+        , in_pub_healthc = ifelse(b5r9c > 0, 1, 0)
+        )
+
+```
+29 percent of household in 2014 had jamkesmas, 36 percent of sample had either jamkesmas or jamkesda.
+janitor::tabyl(s14h\$b7r8a)
+s14h\$b7r8a      n   percent
+1          1  81742 0.2864121
+2          2 203658 0.7135879
+janitor::tabyl(s14h\$b7r8b)
+s14h\$b7r8b      n    percent
+1          1  27195 0.09528732
+2          2 258205 0.90471268
+s14h %\$% sum(b7r8b == 1 | b7r8a ==1)
+[1] 103752
+summary(s14pkh\$fwt_tahun)
+Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+1.00   75.96  153.10  230.60  324.90 2834.00
+# 
+sum(s14pkh\$fwt_tahun)
+[1] 8,045,772
+
+# SUSENAS 2015
+
+```{r}
+
+s15h = read_dta('~/Seafile/2015Q1_Said/kor15rt.dta')
+k15h = read_excel('~/Seafile/2015Q1_Said/Docs_ssn_mar2015/Layout_kor15rt.xlsx', skip=3L)
+k15hv = k15h[1:94,]
+k15hv %<>% clean_names %>%  mutate(variable=tolower(variable))
+k15hv %<>% rbind(c('catatan',95, 'Catatan'), c('exp_cap',96, 'Expenditure per capita'))
+s15h %<>% set_label(k15hv$label)
+
+s15i = read_dta('~/Seafile/2015Q1_Said/kor15ind.dta')
+k15i = read_excel('~/Seafile/2015Q1_Said/Docs_ssn_mar2015/Layout_kor15ind.xlsx', skip = 4L)
+k15i %<>% .[1:208,1:4]
+k15i[207,] = c('catatan', 207, 'Catatan', 'Text')
+k15i[208,] = c('exp_cap', 208, 'Household expenditure per capita', 'Scale')
+s15i %<>% set_label(k15i$Label)
+s15i %>% group_by(urut) %>%  summarise(npbi = sum(r711d)) %>% summarise(sum(npbi > 0))
+s15i %$%  {sum(r711d*fwt_tahun)/sum(fwt_tahun)}
+
+s15i %>% group_by(urut) %>%  summarise(npbi = sum(r711d)) %>% summarise(sum((npbi > 0)*fwt_tahun)/sum(fwt_tahun))
+```
+
+aggregate(exp_cap ~ r1606, s15h, quantile)
+r1606  exp_cap.0% exp_cap.25% exp_cap.50% exp_cap.75% exp_cap.100%
+    1     1    91395.24   338446.55   452980.24   624778.17  94873301.43
+2     5    90762.62   451016.29   684038.83  1085365.97  64338952.38
+ 
+quantile(s15h\$exp_cap)
+s15h\$exp_cap
+0%         25%         50%         75%        100%
+    90762.62   429877.18   650538.93  1030743.15 94873301.43
+ 
+
+# MERGE PMT SCORES
+
+
+```{r}
+
+s14h %<>% 
+    left_join( dplyr::select(pmt14, urut, scores) )
+s14i %<>% 
+    left_join( dplyr::select(pmt14, urut, scores) )
+s13h %<>% 
+    inner_join( dplyr::select(pmt13, urut, scores) )
+s13i %<>% 
+    inner_join( dplyr::select(pmt13, urut, scores) )
+s13i %<>% mutate(jk = ifelse(jk ==2, 0, jk))
+
+```
+
+
+# SUBSAMPLES
+
+## Child Age 0 to 4
+
+### 2014
+
+```{r}
+
+s14i %$% crosstab(umur, is.na(b5r10a))
+s14i_child = 
+    s14i %>%  
+    filter(umur %in% 0:4) %>% 
+    dplyr::select(  urut, nart, jk, pkhever, bsmever, pbiever, scores, kabu , umur
+           , agem = b5r10a
+           , aged = b5r10b
+           , asst_born1 = b5r11a
+           , asst_born2 = b5r11b
+           , vac_bcg = b5r12a
+           , vac_dpt = b5r12b
+           , vac_pol = b5r12c
+           , vac_cam = b5r12d
+           , vac_hep = b5r12e
+           , bfed_ev = b5r13a
+           , bfed_dur = b5r13b1
+           , bfed_exc = b5r13b2
+           , bfed_nex = b5r13b3
+           ) 
+s14i_child %<>% mutate(  med_born2 = ifelse(asst_born2 %in% 1:3, 1, 0) 
+                    , med_born1 = ifelse(asst_born1 %in% 1:3, 1, 0)
+                    , vac_dpt3 = ifelse(vac_dpt %in% 3:6, 1, 0)
+                    , vac_pol3 = ifelse(vac_pol %in% 3:6, 1, 0)
+                    , vac_hep3 = ifelse(vac_hep %in% 3:6, 1, 0)
+                    )
+
+```
+
+### 2013
+
+```{r}
+
+
+s13i_child = 
+    s13i %>%  
+    filter(umur %in% 0:4) %>% 
+    dplyr::select(  urut, nart, jk, pkhever, bsmever, pbiever, scores, kabu , umur
+           , agem = b5r10a
+           , aged = b5r10b
+           , asst_born1 = b5r11a
+           , asst_born2 = b5r11b
+           , vac_bcg = b5r12a
+           , vac_dpt = b5r12b
+           , vac_pol = b5r12c
+           , vac_cam = b5r12d
+           , vac_hep = b5r12e
+           , bfed_ev = b5r13a
+           , bfed_dur = b5r13b1
+           , bfed_exc = b5r13b2
+           , bfed_nex = b5r13b3
+           ) 
+s13i_child %<>% mutate(  med_born2 = ifelse(asst_born2 %in% 1:3, 1, 0) 
+                    , med_born1 = ifelse(asst_born1 %in% 1:3, 1, 0)
+                    , vac_dpt3 = ifelse(vac_dpt %in% 3:6, 1, 0)
+                    , vac_pol3 = ifelse(vac_pol %in% 3:6, 1, 0)
+                    , vac_hep3 = ifelse(vac_hep %in% 3:6, 1, 0)
+                    )
+
+```
+
+
+## School Age: 5+
+
+### Susenas 2014
+           
+
+```{r}
+s14i_school = 
+    filter(s14i, umur >= 5) 
+
+s14i_school =
+    mutate(  s14i_school
+           , ever_school = ifelse(b5r14 > 1, 1, 0)
+           , ever_prim = ifelse(b5r15 >= 1, 1, 0)
+           , ever_middle = ifelse(b5r15 >= 4, 1, 0)
+           , ever_high = ifelse(b5r15 >= 7, 1, 0)
+           , ever_col = ifelse(b5r15 >= 11, 1, 0)
+           , grad_prim = ifelse(b5r17 >= 2, 1, 0)
+           , grad_middle = ifelse(b5r17 >= 5, 1, 0)
+           , grad_high = ifelse(b5r17 >= 8, 1, 0)
+           , grad_col = ifelse(b5r17 >= 12, 1, 0)
+           ) 
+
+s14i_school =
+    mutate_at(  s14i_school 
+              , vars(starts_with('ever_'), starts_with('grad_'))
+              , funs(ifelse(is.na(.), 0, .))
+              )
+
+s14i_school %<>% 
+    mutate(edu_lev = cut(b5r15, breaks = c(0,3,6,10,14), labels = F) , 
+           edu_lev = dplyr::recode_factor(edu_lev, 
+                                          'Primary', 'Middle', 'High', 'College', 
+                                          .missing = 'Never'))
+
+s14i_school %<>% 
+    mutate(b5r16 = as.numeric(ifelse(is.na(b5r16), 0, b5r16)), edu_year = 
+           dplyr::case_when(  b5r15 %in% 1:3   & b5r16 >=6 ~ 6
+                            , b5r15 %in% 1:3   & b5r16 < 6 ~ b5r16
+                            , b5r15 %in% 4:6   & b5r16 >=3 ~ 9
+                            , b5r15 %in% 4:6   & b5r16 < 3 ~ b5r16 + 6
+                            , b5r15 %in% 7:10  & b5r16 >=3 ~ 12
+                            , b5r15 %in% 7:10  & b5r16 < 3 ~ b5r16 + 9
+                            , b5r15 %in% 11:15 & b5r16 >=5 ~ 17
+                            , b5r15 %in% 11:15 & b5r16 < 5 ~ b5r16 + 12
+                         ))
+
+s14i_school = 
+    left_join(s14i_school, 
+              select(pkh_kab, kabu = idkabu, pkh_start ))
+
+s14i_school = mutate(s14i_school, 
+                       pkhever = factor(pkhever, 
+                                        levels = c(0,1), 
+                                        labels = c('Non PKH', 'PKH')))
+```
+
+
+### Susenas 2013
+
+```{r}
+
+s13i_school =
+    filter(s13i, umur >= 5) 
+   
+s13i_school %<>% 
+    mutate(edu_lev = cut(b5r15, breaks = c(0,3,6,10,14), labels = F) , 
+           edu_lev = dplyr::recode_factor(edu_lev, 
+                                          'Primary', 'Middle', 'High', 'College', 
+                                          .missing = 'Never'))
+
+s13i_school = 
+    mutate(s13i_school
+           , b5r16 = as.numeric(ifelse(is.na(b5r16), 0, b5r16))
+           , edu_year = 
+               dplyr::case_when(  b5r15 %in% 1:3   & b5r16 >=6 ~ 6
+                                , b5r15 %in% 1:3   & b5r16 < 6 ~ b5r16
+                                , b5r15 %in% 4:6   & b5r16 >=3 ~ 9
+                                , b5r15 %in% 4:6   & b5r16 < 3 ~ b5r16 + 6
+                                , b5r15 %in% 7:10  & b5r16 >=3 ~ 12
+                                , b5r15 %in% 7:10  & b5r16 < 3 ~ b5r16 + 9
+                                , b5r15 %in% 11:15 & b5r16 >=5 ~ 17
+                                , b5r15 %in% 11:15 & b5r16 < 5 ~ b5r16 + 12
+                                ))
+
+s13i_school =
+    mutate(  s13i_school
+           , ever_school = ifelse(b5r14 > 1, 1, 0)
+           , ever_prim = ifelse(b5r15 >= 1, 1, 0)
+           , ever_middle = ifelse(b5r15 >= 4, 1, 0)
+           , ever_high = ifelse(b5r15 >= 7, 1, 0)
+           , ever_col = ifelse(b5r15 >= 11, 1, 0)
+           , grad_prim = ifelse(b5r17 >= 2, 1, 0)
+           , grad_middle = ifelse(b5r17 >= 5, 1, 0)
+           , grad_high = ifelse(b5r17 >= 8, 1, 0)
+           , grad_col = ifelse(b5r17 >= 12, 1, 0)
+           ) 
+
+s13i_school =
+    mutate_at(  s13i_school 
+              , vars(starts_with('ever_'), starts_with('grad_'))
+              , funs(ifelse(is.na(.), 0, .))
+              )
+
+s13i_school = 
+    mutate(s13i_school
+           , drop_prim = ifelse(edu_lev != 'Primary', NA, ifelse(grad_prim == 0, 1, 0))
+           , drop_middle = ifelse(edu_lev != 'Middle', NA, ifelse(grad_middle == 0, 1, 0))
+           , drop_high = ifelse(edu_lev != 'High', NA, ifelse(grad_high == 0, 1, 0))
+           , drop_col = ifelse(edu_lev != 'College', NA, ifelse(grad_col == 0, 1, 0))
+           )
+
+s13i_school = 
+    left_join(s13i_school, 
+              select(pkh_kab, kabu = idkabu, pkh_start ))
+
+s13i_school = mutate(s13i_school, 
+                       pkhever = factor(pkhever, 
+                                        levels = c(0,1), 
+                                        labels = c('Non PKH', 'PKH')))
+s13i_school %<>% mutate(status = cut(percentile, c(0,20,40,60,80,100), c('poorest', 'poor', 'middle', 'rich', 'richest'))) 
+
+s13i_school = dplyr::select(  s13i_school, urut, nart, jk, pkhever, bsmever, pbiever, kabu , umur, edu_lev, edu_year, starts_with('grad_'), starts_with('ever_'), starts_with('drop'), exp_cap, percentile, status) 
+
+```
+
